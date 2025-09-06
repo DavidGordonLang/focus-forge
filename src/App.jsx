@@ -1,33 +1,56 @@
 import React, { useState, useEffect, useRef } from "react";
 import "./index.css";
 
-// Utility to safely access the shared suite API
-function useSuite() {
-  const safe = typeof window !== "undefined" && window.SUITE ? window.SUITE : null;
-  return safe;
+// Simple helpers for localStorage suite keys
+function getSuiteCurrentIntention() {
+  try {
+    const raw = localStorage.getItem("suite.currentIntention");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function addSuiteTaskOutcome(outcome) {
+  try {
+    const raw = localStorage.getItem("suite.taskOutcomes");
+    const list = raw ? JSON.parse(raw) : [];
+    list.push(outcome);
+    localStorage.setItem("suite.taskOutcomes", JSON.stringify(list));
+  } catch (err) {
+    console.error("Failed to write suite.taskOutcomes", err);
+  }
+}
+
+function addSuiteTask(task) {
+  try {
+    const raw = localStorage.getItem("suite.tasks");
+    const list = raw ? JSON.parse(raw) : [];
+    list.push(task);
+    localStorage.setItem("suite.tasks", JSON.stringify(list));
+  } catch (err) {
+    console.error("Failed to write suite.tasks", err);
+  }
 }
 
 export default function App() {
-  const suite = useSuite();
-
   const [isRunning, setIsRunning] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(25 * 60); // default 25min
-  const [mode, setMode] = useState("work"); // "work" | "break"
+  const [timeLeft, setTimeLeft] = useState(25 * 60); // 25 min default
+  const [mode, setMode] = useState("work"); // "work" or "break"
   const [tasks, setTasks] = useState([]);
   const [taskInput, setTaskInput] = useState("");
+
   const timerRef = useRef(null);
 
-  // Prefill from suite.currentIntention
+  // Prefill from suite.currentIntention if available
   useEffect(() => {
-    if (suite) {
-      const current = suite.getCurrentIntention?.();
-      if (current && current.text) {
-        setTaskInput(current.text);
-      }
+    const current = getSuiteCurrentIntention();
+    if (current && current.text) {
+      setTaskInput(current.text);
     }
-  }, [suite]);
+  }, []);
 
-  // Countdown effect
+  // Timer countdown effect
   useEffect(() => {
     if (isRunning && timeLeft > 0) {
       timerRef.current = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
@@ -37,9 +60,7 @@ export default function App() {
     return () => clearTimeout(timerRef.current);
   }, [isRunning, timeLeft]);
 
-  const toggleTimer = () => {
-    setIsRunning(!isRunning);
-  };
+  const toggleTimer = () => setIsRunning(!isRunning);
 
   const resetTimer = () => {
     setIsRunning(false);
@@ -48,8 +69,9 @@ export default function App() {
 
   const switchMode = () => {
     setIsRunning(false);
-    setMode((prev) => (prev === "work" ? "break" : "work"));
-    setTimeLeft(mode === "work" ? 5 * 60 : 25 * 60);
+    const newMode = mode === "work" ? "break" : "work";
+    setMode(newMode);
+    setTimeLeft(newMode === "work" ? 25 * 60 : 5 * 60);
   };
 
   const addTask = () => {
@@ -59,12 +81,12 @@ export default function App() {
     setTaskInput("");
 
     // 🔗 Save to suite.tasks
-    if (suite) {
-      suite.addTask({
-        title: newTask.title,
-        source: "focus",
-      });
-    }
+    addSuiteTask({
+      id: newTask.id,
+      title: newTask.title,
+      source: "focus",
+      createdAt: new Date().toISOString(),
+    });
   };
 
   const handleCompleteTask = () => {
@@ -76,15 +98,16 @@ export default function App() {
       setTasks(rest);
 
       // 🔗 Save outcome to suite.taskOutcomes
-      if (suite) {
-        suite.addTaskOutcome({
-          title: completed.title,
-          success: true,
-          duration: mode === "work" ? 25 : 5,
-          source: "focus",
-        });
-      }
+      addSuiteTaskOutcome({
+        id: completed.id,
+        title: completed.title,
+        success: true,
+        duration: mode === "work" ? 25 : 5,
+        source: "focus",
+        completedAt: new Date().toISOString(),
+      });
     }
+
     resetTimer();
   };
 
@@ -97,13 +120,15 @@ export default function App() {
           {String(Math.floor(timeLeft / 60)).padStart(2, "0")}:
           {String(timeLeft % 60).padStart(2, "0")}
         </div>
-        <button className="btn" onClick={toggleTimer}>
-          {isRunning ? "Pause" : "Start"}
-        </button>
-        <button className="btn" onClick={resetTimer}>Reset</button>
-        <button className="btn" onClick={switchMode}>
-          Switch to {mode === "work" ? "Break" : "Work"}
-        </button>
+        <div className="controls">
+          <button className="btn" onClick={toggleTimer}>
+            {isRunning ? "Pause" : "Start"}
+          </button>
+          <button className="btn" onClick={resetTimer}>Reset</button>
+          <button className="btn" onClick={switchMode}>
+            Switch to {mode === "work" ? "Break" : "Work"}
+          </button>
+        </div>
       </div>
 
       <div className="tasks">

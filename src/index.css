@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gradient-to-br from-teal-900 via-teal-950 to-sky-950 text-teal-50;
+  font-family: system-ui, sans-serif;
+}

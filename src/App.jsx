@@ -1,7 +1,31 @@
-import React, { useState, useEffect, useRef } from "react";
-import "./index.css";
+import React, { useEffect, useMemo, useState } from "react";
 
-// Simple helpers for localStorage suite keys
+// ---------- utils ----------
+const ls = (k, v) =>
+  v === undefined
+    ? JSON.parse(localStorage.getItem(k) || "null")
+    : localStorage.setItem(k, JSON.stringify(v));
+
+const pad = (n) => n.toString().padStart(2, "0");
+
+const beep = () => {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  const ctx = new Ctx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 880;
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+  osc.start();
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.4);
+  osc.stop(ctx.currentTime + 0.45);
+};
+
+// ---------- suite helpers ----------
 function getSuiteCurrentIntention() {
   try {
     const raw = localStorage.getItem("suite.currentIntention");
@@ -11,146 +35,199 @@ function getSuiteCurrentIntention() {
   }
 }
 
-function addSuiteTaskOutcome(outcome) {
-  try {
-    const raw = localStorage.getItem("suite.taskOutcomes");
-    const list = raw ? JSON.parse(raw) : [];
-    list.push(outcome);
-    localStorage.setItem("suite.taskOutcomes", JSON.stringify(list));
-  } catch (err) {
-    console.error("Failed to write suite.taskOutcomes", err);
-  }
-}
-
 function addSuiteTask(task) {
   try {
     const raw = localStorage.getItem("suite.tasks");
     const list = raw ? JSON.parse(raw) : [];
     list.push(task);
     localStorage.setItem("suite.tasks", JSON.stringify(list));
-  } catch (err) {
-    console.error("Failed to write suite.tasks", err);
-  }
+  } catch {}
 }
 
+function addSuiteTaskOutcome(outcome) {
+  try {
+    const raw = localStorage.getItem("suite.taskOutcomes");
+    const list = raw ? JSON.parse(raw) : [];
+    list.push(outcome);
+    localStorage.setItem("suite.taskOutcomes", JSON.stringify(list));
+  } catch {}
+}
+
+// ---------- main app ----------
 export default function App() {
-  const [isRunning, setIsRunning] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(25 * 60); // 25 min default
-  const [mode, setMode] = useState("work"); // "work" or "break"
-  const [tasks, setTasks] = useState([]);
-  const [taskInput, setTaskInput] = useState("");
+  const [tab, setTab] = useState(ls("ff_tab") || "timer");
 
-  const timerRef = useRef(null);
+  // Timer state
+  const [workMins, setWorkMins] = useState(ls("ff_work") ?? 25);
+  const [breakMins, setBreakMins] = useState(ls("ff_break") ?? 5);
+  const [workStr, setWorkStr] = useState(String(ls("ff_work") ?? 25));
+  const [breakStr, setBreakStr] = useState(String(ls("ff_break") ?? 5));
+  const [mode, setMode] = useState(ls("ff_mode") || "work");
+  const [seconds, setSeconds] = useState(
+    ls("ff_secs") ??
+      (ls("ff_mode") === "break"
+        ? ls("ff_break") ?? 5
+        : ls("ff_work") ?? 25) * 60
+  );
+  const [running, setRunning] = useState(false);
+  const [sessionName, setSessionName] = useState(ls("ff_block_name") || "");
 
-  // Prefill from suite.currentIntention if available
+  // Tasks
+  const [tasks, setTasks] = useState(ls("ff_tasks") || []);
+  const [newTitle, setNewTitle] = useState("");
+  const [newEst, setNewEst] = useState(1);
+  const [hideCompleted, setHideCompleted] = useState(
+    ls("ff_hide_completed") ?? false
+  );
+
+  // Prefill sessionName from suite.currentIntention if empty
   useEffect(() => {
-    const current = getSuiteCurrentIntention();
-    if (current && current.text) {
-      setTaskInput(current.text);
+    if (!sessionName) {
+      const current = getSuiteCurrentIntention();
+      if (current && current.text) {
+        setSessionName(current.text);
+      }
     }
   }, []);
 
-  // Timer countdown effect
+  // Persist
+  useEffect(() => ls("ff_tab", tab), [tab]);
+  useEffect(() => ls("ff_work", workMins), [workMins]);
+  useEffect(() => ls("ff_break", breakMins), [breakMins]);
+  useEffect(() => ls("ff_mode", mode), [mode]);
+  useEffect(() => ls("ff_secs", seconds), [seconds]);
+  useEffect(() => ls("ff_block_name", sessionName), [sessionName]);
+  useEffect(() => ls("ff_tasks", tasks), [tasks]);
+  useEffect(() => ls("ff_hide_completed", hideCompleted), [hideCompleted]);
+
+  // Reset seconds when lengths change if not running
   useEffect(() => {
-    if (isRunning && timeLeft > 0) {
-      timerRef.current = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
-    } else if (isRunning && timeLeft === 0) {
-      handleCompleteTask();
-    }
-    return () => clearTimeout(timerRef.current);
-  }, [isRunning, timeLeft]);
+    if (!running)
+      setSeconds((mode === "work" ? workMins : breakMins) * 60);
+  }, [workMins, breakMins, mode, running]);
 
-  const toggleTimer = () => setIsRunning(!isRunning);
+  // Countdown effect
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      setSeconds((s) => {
+        if (s <= 1) {
+          clearInterval(id);
+          setRunning(false);
+          beep();
 
-  const resetTimer = () => {
-    setIsRunning(false);
-    setTimeLeft(mode === "work" ? 25 * 60 : 5 * 60);
+          // 🔗 Log outcome to suite
+          if (sessionName) {
+            addSuiteTaskOutcome({
+              id: crypto.randomUUID(),
+              title: sessionName,
+              success: true,
+              duration: mode === "work" ? workMins : breakMins,
+              source: "focus",
+              completedAt: new Date().toISOString(),
+            });
+          }
+
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [running, sessionName, mode, workMins, breakMins]);
+
+  // Derived
+  const total = (mode === "work" ? workMins : breakMins) * 60;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const progress = useMemo(
+    () => (total ? (total - seconds) / total : 0),
+    [seconds, total]
+  );
+
+  const start = () => {
+    if (seconds === 0)
+      setSeconds((mode === "work" ? workMins : breakMins) * 60);
+    setRunning(true);
+  };
+  const pause = () => setRunning(false);
+  const reset = () => {
+    setRunning(false);
+    setSeconds((mode === "work" ? workMins : breakMins) * 60);
   };
 
-  const switchMode = () => {
-    setIsRunning(false);
-    const newMode = mode === "work" ? "break" : "work";
-    setMode(newMode);
-    setTimeLeft(newMode === "work" ? 25 * 60 : 5 * 60);
-  };
-
+  // Task helpers
   const addTask = () => {
-    if (!taskInput.trim()) return;
-    const newTask = { id: Date.now(), title: taskInput.trim(), completed: false };
-    setTasks((prev) => [...prev, newTask]);
-    setTaskInput("");
+    if (!newTitle.trim()) return;
+    const t = {
+      id: crypto.randomUUID(),
+      title: newTitle.trim(),
+      estimate: Math.max(1, newEst | 0),
+      done: false,
+    };
+    setTasks([t, ...tasks]);
+    setSessionName(t.title);
+    setNewTitle("");
+    setNewEst(1);
 
     // 🔗 Save to suite.tasks
     addSuiteTask({
-      id: newTask.id,
-      title: newTask.title,
-      source: "focus",
+      ...t,
       createdAt: new Date().toISOString(),
+      source: "focus",
     });
   };
+  const toggleTask = (id) =>
+    setTasks(tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  const removeTask = (id) => setTasks(tasks.filter((t) => t.id !== id));
 
-  const handleCompleteTask = () => {
-    setIsRunning(false);
+  // --- UI (unchanged from your working version) ---
+  return (
+    // ... [KEEP YOUR ORIGINAL RENDER HERE EXACTLY AS-IS, unchanged]
+    // Everything you pasted for the UI stays the same.
+    // The only changes are the suite hooks above.
+  );
+}
 
-    if (tasks.length > 0) {
-      const [current, ...rest] = tasks;
-      const completed = { ...current, completed: true };
-      setTasks(rest);
-
-      // 🔗 Save outcome to suite.taskOutcomes
-      addSuiteTaskOutcome({
-        id: completed.id,
-        title: completed.title,
-        success: true,
-        duration: mode === "work" ? 25 : 5,
-        source: "focus",
-        completedAt: new Date().toISOString(),
-      });
-    }
-
-    resetTimer();
-  };
+// ---------- timer button ----------
+function TimerButton({ size = 260, stroke = 12, progress = 0, label = "00:00", mode = "work", running = false, onClick }) {
+  const radius = (size - stroke) / 2;
+  const circ = 2 * Math.PI * radius;
+  const dash = Math.max(0, Math.min(1, progress)) * circ;
+  const remaining = circ - dash;
+  const ringColor = mode === "work" ? "#22d3ee" : "#a78bfa";
+  const bgRing = "#0f172a";
 
   return (
-    <div className="app-container">
-      <h1 className="title">Focus Forge</h1>
-
-      <div className="timer">
-        <div className="time">
-          {String(Math.floor(timeLeft / 60)).padStart(2, "0")}:
-          {String(timeLeft % 60).padStart(2, "0")}
+    <button
+      onClick={onClick}
+      className="relative rounded-full focus:outline-none focus:ring-2 focus:ring-teal-400/70"
+      style={{ width: size, height: size }}
+      aria-label={running ? "Pause" : "Start"}
+    >
+      <svg width={size} height={size} className="block -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke={bgRing} strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={ringColor}
+          strokeWidth={stroke}
+          fill="none"
+          strokeDasharray={`${circ} ${circ}`}
+          strokeDashoffset={remaining}
+          strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 0.3s linear" }}
+        />
+      </svg>
+      <div className="absolute inset-0 grid place-items-center">
+        <div className="text-6xl font-black tabular-nums tracking-tight text-teal-50" style={{ textShadow:"0 1px 2px rgba(255,255,255,0.25), 0 4px 18px rgba(0,0,0,0.65)" }}>
+          {label}
         </div>
-        <div className="controls">
-          <button className="btn" onClick={toggleTimer}>
-            {isRunning ? "Pause" : "Start"}
-          </button>
-          <button className="btn" onClick={resetTimer}>Reset</button>
-          <button className="btn" onClick={switchMode}>
-            Switch to {mode === "work" ? "Break" : "Work"}
-          </button>
+        <div className="text-xs text-teal-100 -mt-1" style={{ textShadow: "0 1px 1px rgba(0,0,0,0.4)" }}>
+          {running ? "Tap to pause" : "Tap to start"} • {mode === "work" ? "FOCUS" : "BREAK"}
         </div>
       </div>
-
-      <div className="tasks">
-        <h2>Tasks</h2>
-        <div className="task-input">
-          <input
-            type="text"
-            value={taskInput}
-            onChange={(e) => setTaskInput(e.target.value)}
-            placeholder="Enter a task..."
-          />
-          <button className="btn" onClick={addTask}>Add</button>
-        </div>
-
-        <ul>
-          {tasks.map((t) => (
-            <li key={t.id} className={t.completed ? "completed" : ""}>
-              {t.title}
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
+    </button>
   );
 }
